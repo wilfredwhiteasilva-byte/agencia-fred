@@ -158,11 +158,16 @@ export default async (req: Request, context: Context): Promise<Response> => {
     if (!responseText) {
       throw new Error("Claude retornou resposta vazia");
     }
-    console.log("[diag] Código novo rodando — antes do waitUntil");
-    console.log("[diag] context.waitUntil existe?", typeof context.waitUntil);
-
-    context.waitUntil(
+context.waitUntil(
       logToN8N({
+        // Campos esperados pelo workflow N8N de Notion:
+        projeto: "Executive Board - F.R.I.D.A.Y.",
+        sessao: new Date().toISOString(),
+        modelo: MODEL,
+        conteudo_md: `## Pergunta\n\n${question}\n\n---\n\n## Análise\n\n${responseText}`,
+        proximos_passos: [],
+        notion_parent_page_id: process.env.NOTION_EXECUTIVE_BOARD_PAGE_ID || "",
+        // Metadados extras (workflow ignora, mas útil se você for logar)
         question,
         response: responseText,
         model: MODEL,
