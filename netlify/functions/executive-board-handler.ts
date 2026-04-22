@@ -94,18 +94,12 @@ async function logToN8N(payload: {
     return;
   }
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-
+try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: controller.signal,
     });
-
-    clearTimeout(timeout);
 
     if (!res.ok) {
       console.warn(`[N8N] Webhook retornou ${res.status}: ${await res.text()}`);
