@@ -1,19 +1,7 @@
 import type { Context, Config } from "@netlify/functions";
 import Anthropic from "@anthropic-ai/sdk";
 
-/**
- * Executive Board - F.R.I.D.A.Y.
- * Handler que recebe uma pergunta estratégica, consulta o Claude,
- * grava histórico no N8N via context.waitUntil (garantido) e devolve a análise.
- */
-
 type Mode = "full" | "brief";
-
-interface BoardRequest {
-  question: string;
-  mode?: Mode;
-  user_id?: string;
-}
 
 const MODEL = "claude-opus-4-7";
 const MAX_TOKENS_FULL = 1500;
@@ -37,62 +25,104 @@ Princípios:
 - Se a pergunta estiver vaga, faça 1 suposição explícita e prossiga.
 - Português brasileiro.`;
 
-// ---------- Helpers ----------
-
-async function parseBody(req: Request): Promise<BoardRequest | null> {
-  try {
-    const parsed = await req.json();
-    if (typeof parsed?.question !== "string" || !parsed.question.trim()) {
-      return null;
-    }
-    return {
-      question: parsed.question.trim(),
-      mode: parsed.mode === "brief" ? "brief" : "full",
-      user_id: typeof parsed.user_id === "string" ? parsed.user_id : undefined,
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function logToN8N(payload: {
+async function logToNotion(payload: {
   question: string;
   response: string;
   model: string;
   mode: Mode;
   user_id?: string;
   latency_ms: number;
+  input_tokens: number;
+  output_tokens: number;
   timestamp: string;
 }): Promise<void> {
-  const url = process.env.N8N_MEMORIA_WEBHOOK;
-  if (!url) {
-    console.warn("[waitUntil][n8n] N8N_MEMORIA_WEBHOOK não configurada — pulando log");
+  const token = process.env.NOTION_TOKEN;
+  const dbId = process.env.NOTION_DATABASE_ID;
+
+  if (!token || !dbId) {
+    console.warn("[notion] NOTION_TOKEN ou NOTION_DATABASE_ID ausente");
     return;
   }
 
+  const titulo =
+    payload.question.length > 80
+      ? payload.question.substring(0, 77) + "..."
+      : payload.question;
+
+  const respostaTruncada =
+    payload.response.length > 1900
+      ? payload.response.substring(0, 1900) + "\n\n... [truncado]"
+      : payload.response;
+
+  const perguntaTruncada =
+    payload.question.length > 1900
+      ? payload.question.substring(0, 1900) + "..."
+      : payload.question;
+
+  const body = {
+    parent: { database_id: dbId },
+    properties: {
+      Pergunta: {
+        title: [{ text: { content: titulo } }],
+      },
+      Data: {
+        date: { start: payload.timestamp },
+      },
+      "Pergunta Completa": {
+        rich_text: [{ text: { content: perguntaTruncada } }],
+      },
+      Resposta: {
+        rich_text: [{ text: { content: respostaTruncada } }],
+      },
+      Modelo: {
+        select: { name: payload.model },
+      },
+      Modo: {
+        select: { name: payload.mode },
+      },
+      "User ID": {
+        rich_text: [{ text: { content: payload.user_id || "anonimo" } }],
+      },
+      "Latência (ms)": {
+        number: payload.latency_ms,
+      },
+      "Input Tokens": {
+        number: payload.input_tokens,
+      },
+      "Output Tokens": {
+        number: payload.output_tokens,
+      },
+      Status: {
+        select: { name: "✅ OK" },
+      },
+    },
+  };
+
   try {
-    const res = await fetch(url, {
+    const res = await fetch("https://api.notion.com/v1/pages", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+      },
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) {
       const txt = await res.text().catch(() => "<no body>");
-      console.warn(`[waitUntil][n8n] Webhook retornou ${res.status}: ${txt}`);
+      console.warn(`[notion] API retornou ${res.status}: ${txt}`);
       return;
     }
 
-    console.log("[waitUntil][n8n] Histórico gravado com sucesso");
+    console.log("[notion] Página criada com sucesso");
   } catch (err) {
     console.error(
-      "[waitUntil][n8n] Falha ao gravar histórico:",
+      "[notion] Falha ao criar página:",
       err instanceof Error ? err.message : err,
     );
   }
 }
-
-// ---------- Handler ----------
 
 export default async (req: Request, context: Context): Promise<Response> => {
   if (req.method === "OPTIONS") {
@@ -108,34 +138,38 @@ export default async (req: Request, context: Context): Promise<Response> => {
 
   if (req.method !== "POST") {
     return Response.json(
-      { ok: false, error: "Método não permitido. Use POST.", code: "METHOD_NOT_ALLOWED" },
+      { ok: false, error: "Use POST", code: "METHOD_NOT_ALLOWED" },
       { status: 405 },
     );
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    console.error("[config] ANTHROPIC_API_KEY ausente");
     return Response.json(
-      { ok: false, error: "Configuração do servidor incompleta.", code: "MISSING_API_KEY" },
+      { ok: false, error: "Config incompleta", code: "MISSING_API_KEY" },
       { status: 500 },
     );
   }
 
-  const parsed = await parseBody(req);
-  if (!parsed) {
+  let parsed: { question: string; mode: Mode; user_id?: string };
+  try {
+    const raw = await req.json();
+    if (typeof raw?.question !== "string" || !raw.question.trim()) {
+      throw new Error("question inválido");
+    }
+    parsed = {
+      question: raw.question.trim(),
+      mode: raw.mode === "brief" ? "brief" : "full",
+      user_id: typeof raw.user_id === "string" ? raw.user_id : undefined,
+    };
+  } catch {
     return Response.json(
-      {
-        ok: false,
-        error: "Body inválido. Esperado: { question: string, mode?: 'full'|'brief' }",
-        code: "BAD_REQUEST",
-      },
+      { ok: false, error: "Body inválido", code: "BAD_REQUEST" },
       { status: 400 },
     );
   }
 
-  const { question, mode = "full", user_id } = parsed;
-
+  const { question, mode, user_id } = parsed;
   const client = new Anthropic({ apiKey });
   const started = Date.now();
 
@@ -150,30 +184,23 @@ export default async (req: Request, context: Context): Promise<Response> => {
     const latency_ms = Date.now() - started;
 
     const responseText = completion.content
-      .filter((block): block is Anthropic.TextBlock => block.type === "text")
-      .map((block) => block.text)
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
       .join("\n")
       .trim();
 
-    if (!responseText) {
-      throw new Error("Claude retornou resposta vazia");
-    }
-context.waitUntil(
-      logToN8N({
-        // Campos esperados pelo workflow N8N de Notion:
-        projeto: "Executive Board - F.R.I.D.A.Y.",
-        sessao: new Date().toISOString(),
-        modelo: MODEL,
-        conteudo_md: `## Pergunta\n\n${question}\n\n---\n\n## Análise\n\n${responseText}`,
-        proximos_passos: [],
-        notion_parent_page_id: process.env.NOTION_EXECUTIVE_BOARD_PAGE_ID || "",
-        // Metadados extras (workflow ignora, mas útil se você for logar)
+    if (!responseText) throw new Error("Resposta vazia");
+
+    context.waitUntil(
+      logToNotion({
         question,
         response: responseText,
         model: MODEL,
         mode,
         user_id,
         latency_ms,
+        input_tokens: completion.usage.input_tokens,
+        output_tokens: completion.usage.output_tokens,
         timestamp: new Date().toISOString(),
       }),
     );
@@ -193,12 +220,7 @@ context.waitUntil(
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[claude] Erro:", msg);
     return Response.json(
-      {
-        ok: false,
-        error: "Falha ao consultar o modelo. Tente novamente em alguns segundos.",
-        code: "CLAUDE_ERROR",
-        detail: msg,
-      },
+      { ok: false, error: "Falha no modelo", code: "CLAUDE_ERROR", detail: msg },
       { status: 502 },
     );
   }
