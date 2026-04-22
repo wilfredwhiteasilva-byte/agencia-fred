@@ -1,0 +1,12 @@
+﻿{
+  "name": "executive-board",
+  "version": "1.0.0",
+  "description": "Executive Board - F.R.I.D.A.Y.",
+  "main": "index.js",
+  "scripts": {
+    "build": "echo 'Build complete'"
+  },
+  "keywords": [],
+  "author": "Wilfred White",
+  "license": "ISC"
+}
