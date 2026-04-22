@@ -158,6 +158,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
     if (!responseText) {
       throw new Error("Claude retornou resposta vazia");
     }
+    console.log("[diag] Código novo rodando — antes do waitUntil");
+    console.log("[diag] context.waitUntil existe?", typeof context.waitUntil);
 
     context.waitUntil(
       logToN8N({
