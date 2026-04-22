@@ -1,6 +1,6 @@
 {
   "name": "executive-board",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Executive Board - F.R.I.D.A.Y.",
   "main": "index.js",
   "scripts": {
@@ -12,7 +12,7 @@
     "@anthropic-ai/sdk": "^0.90.0"
   },
   "devDependencies": {
-    "@netlify/functions": "^2.8.0",
+    "@netlify/functions": "^5.1.0",
     "@types/node": "^20.0.0"
   }
 }
