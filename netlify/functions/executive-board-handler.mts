@@ -6,8 +6,9 @@ type Mode = "full" | "brief";
 const MODEL = "claude-opus-4-7";
 const MAX_TOKENS_FULL = 1500;
 const MAX_TOKENS_BRIEF = 500;
+const MAX_TOKENS_HARD_CAP = 4000;
 
-const SYSTEM_PROMPT = `Você é o Executive Board F.R.I.D.A.Y., um conselho consultivo estratégico virtual.
+const DEFAULT_SYSTEM_PROMPT = `Você é o Executive Board F.R.I.D.A.Y., um conselho consultivo estratégico virtual.
 
 Seu papel é analisar perguntas de negócio com rigor executivo e entregar recomendações acionáveis.
 
@@ -31,6 +32,7 @@ async function logToNotion(payload: {
   model: string;
   mode: Mode;
   user_id?: string;
+  source?: string;
   latency_ms: number;
   input_tokens: number;
   output_tokens: number;
@@ -44,10 +46,11 @@ async function logToNotion(payload: {
     return;
   }
 
+  const sourcePrefix = payload.source ? `[${payload.source}] ` : "";
   const titulo =
-    payload.question.length > 80
-      ? payload.question.substring(0, 77) + "..."
-      : payload.question;
+    (sourcePrefix + payload.question).length > 80
+      ? (sourcePrefix + payload.question).substring(0, 77) + "..."
+      : sourcePrefix + payload.question;
 
   const respostaTruncada =
     payload.response.length > 1900
@@ -81,7 +84,15 @@ async function logToNotion(payload: {
         select: { name: payload.mode },
       },
       "User ID": {
-        rich_text: [{ text: { content: payload.user_id || "anonimo" } }],
+        rich_text: [
+          {
+            text: {
+              content:
+                (payload.source ? `${payload.source}:` : "") +
+                (payload.user_id || "anonimo"),
+            },
+          },
+        ],
       },
       "Latência (ms)": {
         number: payload.latency_ms,
@@ -151,7 +162,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
     );
   }
 
-  let parsed: { question: string; mode: Mode; user_id?: string };
+  let parsed: {
+    question: string;
+    mode: Mode;
+    user_id?: string;
+    system?: string;
+    source?: string;
+    max_tokens?: number;
+  };
   try {
     const raw = await req.json();
     if (typeof raw?.question !== "string" || !raw.question.trim()) {
@@ -161,6 +179,18 @@ export default async (req: Request, context: Context): Promise<Response> => {
       question: raw.question.trim(),
       mode: raw.mode === "brief" ? "brief" : "full",
       user_id: typeof raw.user_id === "string" ? raw.user_id : undefined,
+      system:
+        typeof raw.system === "string" && raw.system.trim()
+          ? raw.system.trim()
+          : undefined,
+      source:
+        typeof raw.source === "string" && raw.source.trim()
+          ? raw.source.trim()
+          : undefined,
+      max_tokens:
+        typeof raw.max_tokens === "number" && raw.max_tokens > 0
+          ? Math.min(raw.max_tokens, MAX_TOKENS_HARD_CAP)
+          : undefined,
     };
   } catch {
     return Response.json(
@@ -169,15 +199,19 @@ export default async (req: Request, context: Context): Promise<Response> => {
     );
   }
 
-  const { question, mode, user_id } = parsed;
+  const { question, mode, user_id, system, source, max_tokens } = parsed;
+  const systemPrompt = system || DEFAULT_SYSTEM_PROMPT;
+  const tokens =
+    max_tokens || (mode === "brief" ? MAX_TOKENS_BRIEF : MAX_TOKENS_FULL);
+
   const client = new Anthropic({ apiKey });
   const started = Date.now();
 
   try {
     const completion = await client.messages.create({
       model: MODEL,
-      max_tokens: mode === "brief" ? MAX_TOKENS_BRIEF : MAX_TOKENS_FULL,
-      system: SYSTEM_PROMPT,
+      max_tokens: tokens,
+      system: systemPrompt,
       messages: [{ role: "user", content: question }],
     });
 
@@ -198,6 +232,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         model: MODEL,
         mode,
         user_id,
+        source,
         latency_ms,
         input_tokens: completion.usage.input_tokens,
         output_tokens: completion.usage.output_tokens,
@@ -210,6 +245,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       response: responseText,
       model: MODEL,
       mode,
+      source: source || "board",
       latency_ms,
       usage: {
         input_tokens: completion.usage.input_tokens,
